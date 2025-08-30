@@ -1,0 +1,130 @@
+# # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# # dependencies
+# /node_modules
+
+# # next.js
+# /.next/
+# /out/
+
+# # production
+# /build
+
+# # debug
+# npm-debug.log*
+# yarn-debug.log*
+# yarn-error.log*
+# .pnpm-debug.log*
+
+# # env files
+# .env*
+
+# # vercel
+# .vercel
+
+# # typescript
+# *.tsbuildinfo
+# next-env.d.ts
+
+
+
+# Node / PNPM / npm
+node_modules/
+.pnpm-debug.log
+pnpm-lock.yaml
+.cache/
+tmp/
+*.log
+*.tsbuildinfo
+coverage/
+dist/
+build/
+.next/
+out/
+.vercel/
+.vite/
+.svelte-kit/
+
+# Environment and IDE
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+.vscode/          # or selectively ignore only user settings if you share project
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# macOS Finder
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Build artifacts
+*.lock
+package-lock.json
+pnpm-lock.yaml  # keep if you want to ignore the lockfile (not recommended)
+yarn.lock      # if you’re not using yarn
+lerna-debug.log
+
+# Next.js / Vercel
+.next/
+.vercel_build/
+.vercel/
+out/
+build/
+static/
+cache/
+
+# TypeScript
+*.tsbuildinfo
+/dist
+/coverage
+
+# Proof / secret data
+.env.*          # more aggressive: *.env.* if you want to ignore all env variants
+.secrets/
+
+# Testing / CI
+.vitest/
+.nyc_output/
+coverage/
+test-result.xml
+
+# Optional: if you generate artifacts per platform
+android/gradle/
+ios/Pods/
+ios/Podfile.lock
+
+# Docker / containers (if used)
+docker-compose.override.yml
+*.pid
+*.log
+
+# Optional: if you use Docker with build context
+.dockerignore
+Dockerfile*
+docker/
+
+# Optional: if you use Git submodules
+.submodules/
