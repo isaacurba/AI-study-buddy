@@ -5,19 +5,28 @@ from typing import List, Dict, Tuple
 import nltk
 from collections import Counter
 
-# Download required NLTK data (run once)
+# Safe NLTK setup with fallback
 try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
+    for resource in ['punkt', 'punkt_tab', 'stopwords']:
+        try:
+            if "punkt" in resource:
+                nltk.data.find(f'tokenizers/{resource}')
+            else:
+                nltk.data.find(f'corpora/{resource}')
+        except LookupError:
+            nltk.download(resource)
+    from nltk.corpus import stopwords
+    from nltk.tokenize import sent_tokenize, word_tokenize
+    USE_NLTK = True
+except Exception as e:
+    print("⚠️ Warning: Falling back to regex tokenizer (NLTK unavailable)", e)
+    USE_NLTK = False
 
-try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords')
+    # Minimal replacements if NLTK not installed
+    stopwords = {"the", "is", "in", "and", "to", "a", "of"}
+    sent_tokenize = lambda text: re.split(r'(?<=[.!?]) +', text)
+    word_tokenize = lambda text: re.findall(r"\b\w+\b", text)
 
-from nltk.corpus import stopwords
-from nltk.tokenize import sent_tokenize, word_tokenize
 
 class TextProcessor:
     """Advanced text processing for better flashcard generation"""

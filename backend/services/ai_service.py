@@ -1,9 +1,16 @@
 import requests
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 import os
 from dataclasses import dataclass
+import nltk
+
+# Make sure punkt is available for sentence splitting
+try:
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt")
 
 @dataclass
 class FlashcardPair:
@@ -13,38 +20,33 @@ class FlashcardPair:
     difficulty: str = "medium"
     confidence: float = 0.0
 
+
 class AIFlashcardGenerator:
     """Enhanced AI service for generating flashcards using Hugging Face API"""
     
     def __init__(self):
-        self.api_key = os.environ.get('HUGGING_FACE_API_KEY')
+        self.api_key = os.environ.get('HUGGINGFACE_API_KEY')
         self.base_url = "https://api-inference.huggingface.co/models"
         
-        # Multiple model options for different approaches
+        # Multiple model options
         self.models = {
             'text_generation': 'microsoft/DialoGPT-medium',
             'question_generation': 'valhalla/t5-small-qg-hl',
             'summarization': 'facebook/bart-large-cnn'
         }
         
-        self.headers = {"Authorization": f"Bearer {self.api_key}"}
+        # ✅ Only set headers if API key exists
+        self.headers = (
+            {"Authorization": f"Bearer {self.api_key}"}
+            if self.api_key else {}
+        )
     
     def generate_flashcards(self, notes: str, count: int = 5) -> List[FlashcardPair]:
-        """
-        Generate flashcards using multiple AI strategies
-        
-        Args:
-            notes: Input study notes
-            count: Number of flashcards to generate
-            
-        Returns:
-            List of FlashcardPair objects
-        """
+        """Generate flashcards using multiple AI strategies"""
         if not self.api_key:
-            print("Warning: No Hugging Face API key found, using fallback generation")
+            print("⚠️ Warning: No Hugging Face API key found, using fallback generation")
             return self._create_fallback_flashcards(notes, count)
         
-        # Try multiple generation strategies
         strategies = [
             self._generate_with_text_generation,
             self._generate_with_question_generation,
@@ -56,11 +58,13 @@ class AIFlashcardGenerator:
                 flashcards = strategy(notes, count)
                 if len(flashcards) >= count:
                     return flashcards[:count]
+            except requests.exceptions.HTTPError as e:
+                print(f"❌ Hugging Face API error: {e} - {e.response.text}")
+                continue
             except Exception as e:
                 print(f"Strategy failed: {e}")
                 continue
         
-        # Fallback to rule-based generation
         return self._create_fallback_flashcards(notes, count)
     
     def _generate_with_text_generation(self, notes: str, count: int) -> List[FlashcardPair]:
@@ -87,159 +91,110 @@ class AIFlashcardGenerator:
         
         result = response.json()
         generated_text = result[0]['generated_text'] if result else ""
-        
         return self._parse_generated_flashcards(generated_text)
     
     def _generate_with_question_generation(self, notes: str, count: int) -> List[FlashcardPair]:
         """Generate questions using specialized question generation model"""
-        # Split notes into sentences for individual question generation
         sentences = self._split_into_sentences(notes)
         flashcards = []
         
         for sentence in sentences[:count]:
-            if len(sentence.strip()) < 20:  # Skip very short sentences
+            if len(sentence.strip()) < 20:
                 continue
                 
-            try:
-                payload = {
-                    "inputs": f"generate question: {sentence}",
-                    "parameters": {
-                        "max_length": 100,
-                        "temperature": 0.8
-                    }
-                }
-                
-                response = requests.post(
-                    f"{self.base_url}/{self.models['question_generation']}",
-                    headers=self.headers,
-                    json=payload,
-                    timeout=15
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    question = result[0]['generated_text'] if result else ""
-                    
-                    if question and len(question) > 10:
-                        flashcards.append(FlashcardPair(
-                            question=question.strip(),
-                            answer=sentence.strip(),
-                            confidence=0.8
-                        ))
-                        
-            except Exception as e:
-                print(f"Question generation failed for sentence: {e}")
-                continue
+            payload = {
+                "inputs": f"generate question: {sentence}",
+                "parameters": {"max_length": 100, "temperature": 0.8}
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/{self.models['question_generation']}",
+                headers=self.headers,
+                json=payload,
+                timeout=15
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            question = result[0]['generated_text'] if result else ""
+            
+            if question and len(question) > 10:
+                flashcards.append(FlashcardPair(
+                    question=question.strip(),
+                    answer=sentence.strip(),
+                    confidence=0.8
+                ))
         
         return flashcards
     
     def _generate_with_keyword_extraction(self, notes: str, count: int) -> List[FlashcardPair]:
         """Generate flashcards by extracting key concepts and creating questions"""
-        # Extract key terms and concepts
         key_concepts = self._extract_key_concepts(notes)
         sentences = self._split_into_sentences(notes)
         
         flashcards = []
-        
         for concept in key_concepts[:count]:
-            # Find sentences containing this concept
             relevant_sentences = [s for s in sentences if concept.lower() in s.lower()]
-            
             if relevant_sentences:
                 context = relevant_sentences[0]
-                question_templates = [
+                templates = [
                     f"What is {concept}?",
                     f"Define {concept}.",
                     f"Explain the concept of {concept}.",
                     f"What do you know about {concept}?",
                     f"Describe {concept}."
                 ]
-                
-                question = question_templates[len(flashcards) % len(question_templates)]
-                
+                question = templates[len(flashcards) % len(templates)]
                 flashcards.append(FlashcardPair(
                     question=question,
                     answer=context.strip(),
                     confidence=0.6
                 ))
-        
         return flashcards
-    
-    def _create_generation_prompt(self, notes: str, count: int) -> str:
-        """Create an optimized prompt for flashcard generation"""
-        return f"""
-Create {count} educational flashcards from these study notes. Format each as:
-
-Q: [Clear, specific question]
-A: [Concise, accurate answer]
-
-Study Notes:
-{notes[:1000]}  # Limit input length
-
-Generate {count} flashcards now:
-"""
-    
-    def _parse_generated_flashcards(self, text: str) -> List[FlashcardPair]:
-        """Parse AI-generated text into structured flashcards"""
-        flashcards = []
-        
-        # Multiple parsing patterns
-        patterns = [
-            r'Q:\s*(.+?)\s*A:\s*(.+?)(?=Q:|$)',
-            r'Question:\s*(.+?)\s*Answer:\s*(.+?)(?=Question:|$)',
-            r'(\d+)\.\s*Q:\s*(.+?)\s*A:\s*(.+?)(?=\d+\.|$)'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-            
-            for match in matches:
-                if len(match) == 2:  # Q&A pair
-                    question, answer = match
-                elif len(match) == 3:  # Numbered Q&A
-                    _, question, answer = match
-                else:
-                    continue
-                
-                question = question.strip()
-                answer = answer.strip()
-                
-                if len(question) > 5 and len(answer) > 5:
-                    flashcards.append(FlashcardPair(
-                        question=question,
-                        answer=answer,
-                        confidence=0.7
-                    ))
-        
-        return flashcards
-    
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences for processing"""
-        # Simple sentence splitting
-        sentences = re.split(r'[.!?]+', text)
-        return [s.strip() for s in sentences if len(s.strip()) > 20]
     
     def _extract_key_concepts(self, text: str) -> List[str]:
         """Extract key concepts and terms from text"""
-        # Simple keyword extraction using capitalized words and common patterns
         concepts = []
-        
-        # Find capitalized words (potential proper nouns/concepts)
         capitalized = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
         concepts.extend(capitalized)
-        
-        # Find quoted terms
         quoted = re.findall(r'"([^"]+)"', text)
         concepts.extend(quoted)
-        
-        # Find terms in parentheses
-        parentheses = re.findall(r'$$([^)]+)$$', text)
+        parentheses = re.findall(r'\(([^)]+)\)', text)
         concepts.extend(parentheses)
-        
-        # Remove duplicates and filter
-        unique_concepts = list(set(concepts))
-        return [c for c in unique_concepts if 2 < len(c) < 50]
-    
+        unique = list(set(concepts))
+        return [c for c in unique if 2 < len(c) < 50]
+
+    def _create_generation_prompt(self, notes: str, count: int) -> str:
+        """Builds the text prompt for Hugging Face generation"""
+        return (
+            f"Generate {count} study flashcards in JSON format with fields 'question' and 'answer'. "
+            f"Focus only on academic content. Context:\n{notes[:1000]}"
+        )
+
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences safely"""
+        try:
+            return nltk.sent_tokenize(text)
+        except Exception:
+            return re.split(r'(?<=[.!?]) +', text)
+
+    def _parse_generated_flashcards(self, generated_text: str) -> List[FlashcardPair]:
+        """Parse raw text output into FlashcardPair list"""
+        flashcards = []
+        try:
+            data = json.loads(generated_text)
+            if isinstance(data, list):
+                for item in data:
+                    if "question" in item and "answer" in item:
+                        flashcards.append(FlashcardPair(
+                            question=item["question"],
+                            answer=item["answer"],
+                            confidence=0.7
+                        ))
+        except Exception:
+            pass
+        return flashcards
+
     def _create_fallback_flashcards(self, notes: str, count: int) -> List[FlashcardPair]:
         """Create basic flashcards when AI generation fails"""
         sentences = self._split_into_sentences(notes)
@@ -261,10 +216,8 @@ Generate {count} flashcards now:
         # Create flashcards from sentences
         remaining_count = count - len(flashcards)
         for sentence in sentences[:remaining_count]:
-            # Create a question by replacing key terms with blanks
             words = sentence.split()
             if len(words) > 5:
-                # Find important words to blank out
                 important_words = [w for w in words if len(w) > 4 and w.isalpha()]
                 if important_words:
                     word_to_blank = important_words[0]
@@ -276,7 +229,6 @@ Generate {count} flashcards now:
                         confidence=0.4
                     ))
         
-        # Ensure we have enough flashcards
         while len(flashcards) < count:
             flashcards.append(FlashcardPair(
                 question=f"Review question {len(flashcards) + 1}",
@@ -288,11 +240,9 @@ Generate {count} flashcards now:
     
     def assess_difficulty(self, question: str, answer: str) -> str:
         """Assess the difficulty level of a flashcard"""
-        # Simple heuristic-based difficulty assessment
         question_length = len(question.split())
         answer_length = len(answer.split())
         
-        # Check for complexity indicators
         complex_words = ['analyze', 'evaluate', 'synthesize', 'compare', 'contrast']
         has_complex_words = any(word in question.lower() for word in complex_words)
         
@@ -303,22 +253,12 @@ Generate {count} flashcards now:
         else:
             return "easy"
 
-# Utility functions for the main app
+
+# ✅ Utility functions should be OUTSIDE the class
 def generate_flashcards_with_ai(notes: str, count: int = 5) -> List[Dict[str, str]]:
-    """
-    Main function to generate flashcards - used by Flask app
-    
-    Args:
-        notes: Study notes text
-        count: Number of flashcards to generate
-        
-    Returns:
-        List of dictionaries with question, answer, and difficulty
-    """
     generator = AIFlashcardGenerator()
     flashcard_pairs = generator.generate_flashcards(notes, count)
-    
-    # Convert to dictionary format for JSON serialization
+
     flashcards = []
     for pair in flashcard_pairs:
         difficulty = generator.assess_difficulty(pair.question, pair.answer)
@@ -328,8 +268,9 @@ def generate_flashcards_with_ai(notes: str, count: int = 5) -> List[Dict[str, st
             "difficulty_level": difficulty,
             "confidence": pair.confidence
         })
-    
+
     return flashcards
+
 
 def validate_flashcard_quality(flashcards: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """Validate and improve flashcard quality"""
@@ -339,11 +280,9 @@ def validate_flashcard_quality(flashcards: List[Dict[str, str]]) -> List[Dict[st
         question = card.get('question', '').strip()
         answer = card.get('answer', '').strip()
         
-        # Quality checks
         if len(question) < 5 or len(answer) < 3:
             continue
             
-        # Remove duplicates
         if not any(existing['question'].lower() == question.lower() for existing in validated):
             validated.append(card)
     

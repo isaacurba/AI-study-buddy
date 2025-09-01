@@ -1,19 +1,21 @@
-from flask import Flask, request, jsonify, session
+import traceback
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from werkzeug.security import generate_password_hash, check_password_hash
 import mysql.connector
 from mysql.connector import Error
 import os
 from datetime import datetime
+from dotenv import load_dotenv
 import requests
 import json
 from typing import List, Dict, Any
 from services.ai_service import generate_flashcards_with_ai, validate_flashcard_quality
 from utils.text_processing import preprocess_notes_for_ai
-
+ 
+load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here')
-CORS(app, supports_credentials=True)
+app.secret_key = os.environ.get('SECRET_KEY')
+CORS(app)
 
 # Database configuration
 DB_CONFIG = {
@@ -25,8 +27,8 @@ DB_CONFIG = {
 }
 
 # Hugging Face API configuration
-HF_API_KEY = os.environ.get('HUGGING_FACE_API_KEY')
-HF_API_URL = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
+HF_API_KEY = os.environ.get('HUGGINGFACE_API_KEY')
+HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
 
 def get_db_connection():
     """Create and return a database connection"""
@@ -38,98 +40,18 @@ def get_db_connection():
         return None
 
 # API Routes
+@app.route('/')
+def hello():
+    return {"message": "Welcome to AI Study Buddy!"}
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
-@app.route('/api/auth/register', methods=['POST'])
-def register():
-    """User registration endpoint"""
-    data = request.get_json()
-    
-    if not data or not all(k in data for k in ('username', 'email', 'password')):
-        return jsonify({"error": "Missing required fields"}), 400
-    
-    connection = get_db_connection()
-    if not connection:
-        return jsonify({"error": "Database connection failed"}), 500
-    
-    try:
-        cursor = connection.cursor()
-        password_hash = generate_password_hash(data['password'])
-        
-        cursor.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s)",
-            (data['username'], data['email'], password_hash)
-        )
-        connection.commit()
-        
-        user_id = cursor.lastrowid
-        session['user_id'] = user_id
-        
-        return jsonify({
-            "message": "User registered successfully",
-            "user_id": user_id
-        }), 201
-        
-    except mysql.connector.IntegrityError:
-        return jsonify({"error": "Username or email already exists"}), 409
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-
-@app.route('/api/auth/login', methods=['POST'])
-def login():
-    """User login endpoint"""
-    data = request.get_json()
-    
-    if not data or not all(k in data for k in ('username', 'password')):
-        return jsonify({"error": "Missing username or password"}), 400
-    
-    connection = get_db_connection()
-    if not connection:
-        return jsonify({"error": "Database connection failed"}), 500
-    
-    try:
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT id, username, email, password_hash FROM users WHERE username = %s",
-            (data['username'],)
-        )
-        user = cursor.fetchone()
-        
-        if user and check_password_hash(user['password_hash'], data['password']):
-            session['user_id'] = user['id']
-            return jsonify({
-                "message": "Login successful",
-                "user": {
-                    "id": user['id'],
-                    "username": user['username'],
-                    "email": user['email']
-                }
-            })
-        else:
-            return jsonify({"error": "Invalid credentials"}), 401
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-
 @app.route('/api/decks', methods=['GET'])
 def get_decks():
-    """Get all decks for the current user"""
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "Authentication required"}), 401
-    
+    """Get all decks for a user"""
     connection = get_db_connection()
     if not connection:
         return jsonify({"error": "Database connection failed"}), 500
@@ -141,10 +63,8 @@ def get_decks():
                       COUNT(f.id) as flashcard_count
                FROM decks d
                LEFT JOIN flashcards f ON d.id = f.deck_id
-               WHERE d.user_id = %s
                GROUP BY d.id
-               ORDER BY d.created_at DESC""",
-            (user_id,)
+               ORDER BY d.created_at DESC"""
         )
         decks = cursor.fetchall()
         
@@ -161,22 +81,19 @@ def get_decks():
 def create_deck():
     """Create a new deck with AI-generated flashcards"""
     data = request.get_json()
-    user_id = session.get('user_id')
-    
-    if not user_id:
-        return jsonify({"error": "Authentication required"}), 401
     
     if not data or not all(k in data for k in ('title', 'notes')):
         return jsonify({"error": "Missing title or notes"}), 400
     
-    connection = get_db_connection()
-    if not connection:
-        return jsonify({"error": "Database connection failed"}), 500
-    
+    connection, cursor = None, None  
     try:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        # ---- AI flashcard generation ----
         preprocessed_notes = preprocess_notes_for_ai(data['notes'])
-        flashcards = generate_flashcards_with_ai(preprocessed_notes, 5)
-        
+        flashcards = generate_flashcards_with_ai(preprocessed_notes, 20)
         flashcards = validate_flashcard_quality(flashcards)
         
         # Ensure we have at least 3 flashcards
@@ -184,15 +101,15 @@ def create_deck():
             return jsonify({"error": "Unable to generate sufficient flashcards from the provided notes"}), 400
         
         cursor = connection.cursor()
-        
-        # Create deck
+
+        # ---- Create deck ----
         cursor.execute(
-            "INSERT INTO decks (user_id, title, description, original_notes) VALUES (%s, %s, %s, %s)",
-            (user_id, data['title'], data.get('description', ''), data['notes'])
+            "INSERT INTO decks (title, description, original_notes) VALUES (%s, %s, %s)",
+            (data['title'], data.get('description', ''), data['notes'])
         )
         deck_id = cursor.lastrowid
         
-        # Create flashcards with difficulty levels
+        # ---- Create flashcards ----
         for flashcard in flashcards:
             cursor.execute(
                 "INSERT INTO flashcards (deck_id, question, answer, difficulty_level) VALUES (%s, %s, %s, %s)",
@@ -209,20 +126,22 @@ def create_deck():
         }), 201
         
     except Exception as e:
-        connection.rollback()
+        if connection:
+            connection.rollback()
+        print("❌ ERROR in create_deck:", e)
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    
     finally:
-        if connection.is_connected():
+        if cursor:
             cursor.close()
+        if connection:
             connection.close()
+
 
 @app.route('/api/decks/<int:deck_id>/flashcards', methods=['GET'])
 def get_flashcards(deck_id):
     """Get all flashcards for a specific deck"""
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "Authentication required"}), 401
-    
     connection = get_db_connection()
     if not connection:
         return jsonify({"error": "Database connection failed"}), 500
@@ -230,10 +149,10 @@ def get_flashcards(deck_id):
     try:
         cursor = connection.cursor(dictionary=True)
         
-        # Verify deck ownership
+        # Verify deck exists
         cursor.execute(
-            "SELECT id FROM decks WHERE id = %s AND user_id = %s",
-            (deck_id, user_id)
+            "SELECT id FROM decks WHERE id = %s",
+            (deck_id,)
         )
         if not cursor.fetchone():
             return jsonify({"error": "Deck not found or access denied"}), 404
@@ -257,10 +176,6 @@ def get_flashcards(deck_id):
 @app.route('/api/decks/<int:deck_id>', methods=['DELETE'])
 def delete_deck(deck_id):
     """Delete a deck and all its flashcards"""
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "Authentication required"}), 401
-    
     connection = get_db_connection()
     if not connection:
         return jsonify({"error": "Database connection failed"}), 500
@@ -268,10 +183,10 @@ def delete_deck(deck_id):
     try:
         cursor = connection.cursor()
         
-        # Verify deck ownership and delete
+        # Delete the deck
         cursor.execute(
-            "DELETE FROM decks WHERE id = %s AND user_id = %s",
-            (deck_id, user_id)
+            "DELETE FROM decks WHERE id = %s",
+            (deck_id,)
         )
         
         if cursor.rowcount == 0:
